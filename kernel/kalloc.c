@@ -9,6 +9,25 @@
 #include "riscv.h"
 #include "defs.h"
 
+/*
+kernel memory layout
+
++------------------+ 0x88000000 (PHYSTOP)
+|                  |
+|    Free memory   | RW-
+|                  |
++------------------+ end
+|   Kernel data    | RW-
++------------------+
+|   Kernel text    | R-X
++------------------+ 0x80000000 (KERNBASE)
+*/
+
+// user programs can only use the Free memory, however kernel data/text size will only be determined at runtime, hence also the case for end
+// so we have to use the info that is available during compile time to decide the size of page reference count array
+#define MAXNPAGES (PHYSTOP - KERNBASE)/PGSIZE
+#define PA2INDEX(pa) ((uint64)pa - PGROUNDUP((uint64)end)) / PGSIZE
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -21,6 +40,8 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  // only (PHYSTOP-end)/PGSIZE of entries will be used, since they corresponde to the free memroy
+  int page_ref_count[MAXNPAGES];
 } kmem;
 
 void
@@ -28,6 +49,7 @@ kinit()
 {
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
+  memset(kmem.page_ref_count, 0, sizeof(int) * MAXNPAGES);
 }
 
 void
@@ -37,6 +59,29 @@ freerange(void *pa_start, void *pa_end)
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
+}
+
+int
+get_page_ref(uint64 pa)
+{
+  acquire(&kmem.lock);
+  int page_ref_count = kmem.page_ref_count[PA2INDEX(pa)];
+  release(&kmem.lock);
+  return page_ref_count;
+}
+
+int 
+inc_page_ref(uint64 pa)
+{
+  if ((pa < (uint64)end) || (pa > (uint64)PHYSTOP)) {
+    printf("invalid pa while update page reference count: %p", pa);
+    return -1;
+  }
+  
+  acquire(&kmem.lock);
+  kmem.page_ref_count[PA2INDEX(pa)]++;
+  release(&kmem.lock);
+  return 0;
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -50,6 +95,14 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+   acquire(&kmem.lock);
+  if (--kmem.page_ref_count[PA2INDEX(pa)] > 0) {
+    release(&kmem.lock);
+    return;
+  }
+  kmem.page_ref_count[PA2INDEX(pa)] = 0;
+  release(&kmem.lock);
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -72,8 +125,10 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
+  if(r) {
+     kmem.freelist = r->next;
+    kmem.page_ref_count[PA2INDEX(r)] = 1;
+  }
   release(&kmem.lock);
 
   if(r)

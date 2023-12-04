@@ -65,6 +65,14 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 15) {
+    // Store/AMO page fault
+
+    uint64 va = r_stval();  // page fault set stval register to hold the fault va
+    if (cow_pagefault_handler(p->pagetable, va) != 0) {
+      printf("usertrap: failed to handle cow page fault\n");
+      exit(-1);
+     }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -218,4 +226,45 @@ devintr()
     return 0;
   }
 }
+
+int
+cow_pagefault_handler(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa;
+  char *mem;
+  uint flags;
+
+  pte = walk(pagetable, va, 0);
+  if(pte == 0 || (*pte & PTE_V) == 0)
+    return -1;
+
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  if (pa == 0) 
+    return -1;
+
+  if ((*pte & PTE_COW) == 0)
+    return 0;
+
+  if (get_page_ref(pa) > 1) {
+    if((mem = kalloc()) == 0) {
+      printf("cow_pagefault_handler(): failed to allocate memory\n");
+      return -1;
+    }
+
+    memmove(mem, (char*)pa, PGSIZE);
+    uvmunmap(pagetable, PGROUNDDOWN(va), 1, 1);
+    flags = (flags & ~PTE_COW) | PTE_W;
+    if(mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, flags) != 0){
+      printf("cow_pagefault_handler(): failed to install new page\n");
+      return -1;
+    }
+    return 0;
+  }
+
+  *pte = (*pte & ~PTE_COW) | PTE_W;
+  return 0;
+}
+
 
