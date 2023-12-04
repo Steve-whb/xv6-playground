@@ -266,5 +266,3 @@ cow_pagefault_handler(pagetable_t pagetable, uint64 va)
   *pte = (*pte & ~PTE_COW) | PTE_W;
   return 0;
 }
-
-
