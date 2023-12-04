@@ -1,10 +1,11 @@
 # Enhanced xv6 Operating System
 
-This repository hosts my version of the `xv6` operating system, a simple Unix-like teaching operating system developed by MIT for their Operating Systems Engineering course. The purpose of this project is to explore OS concepts and self-improving.
+This repository hosts my version of the `xv6` operating system, a simple Unix-like teaching operating system developed by MIT for their Operating Systems Engineering course. The purpose of this project is to explore OS concepts.
 
 ## Features
 
 - **Copy-On-Write Fork:** Implemented an efficient process creation mechanism that avoids copying the entire address space of the parent until a write operation occurs.
+- **Lazy Allocation:** mplemented a memory management strategy that defers the allocation of physical memory for a page until the first time it is accessed. This approach minimizes memory usage by only allocating memory when it is actually needed, rather than at the time of address space creation or mapping.
 - **Additional Features:** (...)
 
 ## License

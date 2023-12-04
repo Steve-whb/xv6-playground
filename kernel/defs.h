@@ -87,7 +87,6 @@ void            printfinit(void);
 int             cpuid(void);
 void            exit(int);
 int             fork(void);
-int             growproc(int);
 void            proc_mapstacks(pagetable_t);
 pagetable_t     proc_pagetable(struct proc *);
 void            proc_freepagetable(pagetable_t, uint64);
@@ -150,6 +149,7 @@ void            trapinithart(void);
 extern struct spinlock tickslock;
 void            usertrapret(void);
 int             cow_pagefault_handler(pagetable_t, uint64);
+int             lazyalloc_pagefault_handler(pagetable_t, uint64);
 
 // uart.c
 void            uartinit(void);

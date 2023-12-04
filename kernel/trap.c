@@ -65,14 +65,35 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if (r_scause() == 15) {
-    // Store/AMO page fault
+  } else if(r_scause() == 13) { // Load page fault
+    uint64 va = r_stval();  // page fault set stval register to hold the fault va
+
+    // va shouldn't exceed what the program asked sbrk to allocate
+    if (va >= p->sz)
+      setkilled(p);
+      
+    if (lazyalloc_pagefault_handler(p->pagetable, va) != 0) {
+      printf("usertrap: failed to handle load page fault\n");
+      setkilled(p);
+    }
+  } else if (r_scause() == 15) { // Store/AMO page fault
 
     uint64 va = r_stval();  // page fault set stval register to hold the fault va
+    
+    // va shouldn't exceed what the program asked sbrk to allocate
+    if (va >= p->sz)
+      setkilled(p);
+
+    if (lazyalloc_pagefault_handler(p->pagetable, va) != 0){
+        printf("usertrap: failed to handle lazy allocation page fault\n");
+        // exit immediately here to avoid null pointer dereference below which could cause kernel trap
+        exit(-1);
+    }
+
     if (cow_pagefault_handler(p->pagetable, va) != 0) {
-      printf("usertrap: failed to handle cow page fault\n");
-      exit(-1);
-     }
+        printf("usertrap: failed to handle cow page fault\n");
+        setkilled(p);
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -227,6 +248,28 @@ devintr()
   }
 }
 
+int 
+lazyalloc_pagefault_handler(pagetable_t pagetable, uint64 va)
+{
+  char* mem;
+  pte_t *pte;
+  
+  pte = walk(pagetable, va, 0);
+  // not a lazy allocation fault
+  if (pte != 0 && (*pte & PTE_V))
+    return 0;
+  
+  if ((mem = kalloc()) == 0)
+    return -1;
+
+  memset(mem, 0, PGSIZE);
+  if (mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_U | PTE_W | PTE_R) != 0) {
+    printf("lazy_alloc_pagefault_handler: failed to install new pages\n");
+    return -1;
+  }
+  return 0;
+}
+
 int
 cow_pagefault_handler(pagetable_t pagetable, uint64 va)
 {
@@ -236,9 +279,6 @@ cow_pagefault_handler(pagetable_t pagetable, uint64 va)
   uint flags;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0 || (*pte & PTE_V) == 0)
-    return -1;
-
   pa = PTE2PA(*pte);
   flags = PTE_FLAGS(*pte);
   if (pa == 0) 
@@ -257,6 +297,7 @@ cow_pagefault_handler(pagetable_t pagetable, uint64 va)
     uvmunmap(pagetable, PGROUNDDOWN(va), 1, 1);
     flags = (flags & ~PTE_COW) | PTE_W;
     if(mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, flags) != 0){
+      kfree((void*)mem);
       printf("cow_pagefault_handler(): failed to install new page\n");
       return -1;
     }
