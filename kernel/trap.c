@@ -79,15 +79,14 @@ usertrap(void)
   } else if (r_scause() == 15) { // Store/AMO page fault
 
     uint64 va = r_stval();  // page fault set stval register to hold the fault va
-    
+
     // va shouldn't exceed what the program asked sbrk to allocate
     if (va >= p->sz)
       setkilled(p);
 
     if (lazyalloc_pagefault_handler(p->pagetable, va) != 0){
         printf("usertrap: failed to handle lazy allocation page fault\n");
-        // exit immediately here to avoid null pointer dereference below which could cause kernel trap
-        exit(-1);
+        setkilled(p);
     }
 
     if (cow_pagefault_handler(p->pagetable, va) != 0) {
@@ -279,6 +278,9 @@ cow_pagefault_handler(pagetable_t pagetable, uint64 va)
   uint flags;
 
   pte = walk(pagetable, va, 0);
+  if (pte == 0)
+    return -1;
+
   pa = PTE2PA(*pte);
   flags = PTE_FLAGS(*pte);
   if (pa == 0) 
