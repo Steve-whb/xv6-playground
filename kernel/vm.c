@@ -324,7 +324,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
        goto err;
      }
 
-    if (inc_page_ref(pa) != 0)
+    if (inc_page_ref(pa) == -1)
       panic("uvmcopy: failed to increase page reference count");
   }
   return 0;
