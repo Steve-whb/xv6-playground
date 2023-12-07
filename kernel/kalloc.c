@@ -27,8 +27,11 @@ kernel memory layout
 // so we have to use the info that is available during compile time to decide the size of page reference count array
 #define MAXNPAGES (PHYSTOP - KERNBASE)/PGSIZE
 #define PA2INDEX(pa) ((uint64)pa - PGROUNDUP((uint64)end)) / PGSIZE
+// Number of pages the current CPU will get from other CPU if its is empty
+#define NPGTOMOVE 10
 
 void freerange(void *pa_start, void *pa_end);
+void initlocks(void);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -40,7 +43,10 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+  int size;
+} kmems[NCPU] = {
+  [0 ... NCPU-1] = { .freelist = 0, .size = 0 }
+};
 
 // only (PHYSTOP-end)/PGSIZE of entries will be used, since they corresponde to the free memroy
 int page_ref_count[MAXNPAGES];
@@ -49,10 +55,17 @@ int is_initializing = 1;
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  initlocks();
+  // The 1st cpu called kinit will get all physical memory initially
   freerange(end, (void*)PHYSTOP);
   memset(page_ref_count, 0, sizeof(int) * MAXNPAGES);
   is_initializing = 0;
+}
+
+void initlocks()
+{
+  for (int i = 0; i < NCPU; i++)
+    initlock(&kmems[i].lock, "kmem");
 }
 
 void
@@ -65,12 +78,21 @@ freerange(void *pa_start, void *pa_end)
 }
 
 int
-get_page_ref(uint64 pa)
+is_pa_valid(uint pa)
 {
   if ((pa < (uint64)end) || (pa > (uint64)PHYSTOP)) {
-    printf("invalid pa while fetch page reference count: %p", pa);
+    printf("invalid pa: %p while access page reference count", pa);
     return -1;
   }
+
+  return 0;
+}
+
+int
+get_page_ref(uint64 pa)
+{
+  if (is_pa_valid(pa) == -1)
+    return -1;
   
   return page_ref_count[PA2INDEX(pa)];
 }
@@ -78,22 +100,59 @@ get_page_ref(uint64 pa)
 int 
 inc_page_ref(uint64 pa)
 {
-  if ((pa < (uint64)end) || (pa > (uint64)PHYSTOP)) {
-    printf("invalid pa while increase page reference count: %p", pa);
+  if (is_pa_valid(pa) == -1)
     return -1;
-  }
   
   return __sync_fetch_and_add(&page_ref_count[PA2INDEX(pa)], 1);
 }
 
 int dec_page_ref(uint64 pa)
 {
-  if ((pa < (uint64)end) || (pa > (uint64)PHYSTOP)) {
-    printf("invalid pa while decrease page reference count: %p", pa);
+  if (is_pa_valid(pa) == -1)
     return -1;
-  }
   
   return __sync_fetch_and_sub(&page_ref_count[PA2INDEX(pa)], 1);
+}
+
+// Disable interrupts to ensure a consistent execution context.
+// This is necessary because a context switch (caused by an interrupt) could
+// move the process to a different CPU, leading to an incorrect core number.
+int 
+safe_cpuid()
+{
+  push_off();
+  int id = cpuid();
+  pop_off();
+  return id;
+}
+
+// Move some memory from src_cpuid to dst_cpuid. This function needs to be called with locks on 
+// the two CPU's kmems acquired
+int 
+move_freelist(int dst_cpuid, int src_cpuid)
+{
+  if (kmems[src_cpuid].size <= NPGTOMOVE)
+    return -1;
+
+  struct run *current = kmems[src_cpuid].freelist;
+  struct run *prev = 0;
+  for (int i = 0; i < NPGTOMOVE; i++) {
+      prev = current;
+      current = current->next;
+  }
+
+  if (!prev || !current)
+    return -1;
+  
+  prev->next = 0; // Detach the sublist
+  struct run *old_dst_head = kmems[dst_cpuid].freelist;
+  kmems[dst_cpuid].freelist = kmems[src_cpuid].freelist;
+  kmems[src_cpuid].freelist = current;
+  prev->next = old_dst_head; // Attach the sublist to dst freelist
+
+  kmems[dst_cpuid].size += NPGTOMOVE;
+  kmems[src_cpuid].size -= NPGTOMOVE;
+  return 0;
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -104,13 +163,15 @@ void
 kfree(void *pa)
 {
   struct run *r;
+  int id;
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  // Only need to decrement page references count if kfree is called outside of the initialization
   if (!is_initializing) {
     if (dec_page_ref((uint64)pa) > 1)
-    return;
+      return;
   }
 
   // Fill with junk to catch dangling refs.
@@ -118,10 +179,12 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  id = safe_cpuid();
+  acquire(&kmems[id].lock);
+  r->next = kmems[id].freelist;
+  kmems[id].freelist = r;
+  kmems[id].size++;
+  release(&kmems[id].lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -131,13 +194,32 @@ void *
 kalloc(void)
 {
   struct run *r;
+  int id;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r) {
-    kmem.freelist = r->next;
+  id = safe_cpuid();
+  acquire(&kmems[id].lock);
+
+  // No free memory in the current CPU's free list, need to borrow some other CPUs
+  if (kmems[id].size == 0) {
+    for (int i = 0; i < NCPU; i++) {
+      if (i != id && kmems[i].freelist) {
+        acquire(&kmems[i].lock);
+        if (move_freelist(id, i) == 0) {
+          // got some free memory from i, we can start alloc memory from it
+          release(&kmems[i].lock);
+          break;
+        } 
+        release(&kmems[i].lock);
+      }
+    }
   }
-  release(&kmem.lock);
+
+  r = kmems[id].freelist;
+  if(r) {
+    kmems[id].freelist = r->next;
+    kmems[id].size--;
+  }
+  release(&kmems[id].lock);
 
   if(r) {
     memset((char*)r, 5, PGSIZE); // fill with junk
