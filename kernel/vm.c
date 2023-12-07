@@ -357,6 +357,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if (va0 > MAXVA)
+      return -1;
+      
     if (cow_pagefault_handler(pagetable, va0) != 0)
       return -1;
     

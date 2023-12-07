@@ -69,11 +69,11 @@ usertrap(void)
     uint64 va = r_stval();  // page fault set stval register to hold the fault va
 
     // va shouldn't exceed what the program asked sbrk to allocate
-    if (va >= p->sz)
-      setkilled(p);
+    if (va >= p->sz) {
+      exit(-1);
+    }
       
     if (lazyalloc_pagefault_handler(p->pagetable, va) != 0) {
-      printf("usertrap: failed to handle load page fault\n");
       setkilled(p);
     }
   } else if (r_scause() == 15) { // Store/AMO page fault
@@ -81,16 +81,15 @@ usertrap(void)
     uint64 va = r_stval();  // page fault set stval register to hold the fault va
 
     // va shouldn't exceed what the program asked sbrk to allocate
-    if (va >= p->sz)
-      setkilled(p);
+    if (va >= p->sz) {
+      exit(-1);
+    }
 
     if (lazyalloc_pagefault_handler(p->pagetable, va) != 0){
-        printf("usertrap: failed to handle lazy allocation page fault\n");
         setkilled(p);
     }
 
     if (cow_pagefault_handler(p->pagetable, va) != 0) {
-        printf("usertrap: failed to handle cow page fault\n");
         setkilled(p);
     }
   } else if((which_dev = devintr()) != 0){

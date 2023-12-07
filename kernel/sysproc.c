@@ -43,10 +43,14 @@ sys_sbrk(void)
 
   argint(0, &n);
   addr = myproc()->sz;
+
   if(n < 0){
     uvmdealloc(myproc()->pagetable, addr, addr + n);
   }
-  myproc()->sz += n;
+
+  // Check for integer overflow
+  if ((n >= 0 && (addr + n >= addr)) || n < 0)
+    myproc()->sz += n;
   return addr;
 }
 
