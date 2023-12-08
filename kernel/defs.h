@@ -149,7 +149,7 @@ void            trapinithart(void);
 extern struct spinlock tickslock;
 void            usertrapret(void);
 int             cow_pagefault_handler(pagetable_t, uint64);
-int             lazyalloc_pagefault_handler(pagetable_t, uint64);
+int             lazyalloc_pagefault_handler(struct proc *, uint64);
 
 // uart.c
 void            uartinit(void);

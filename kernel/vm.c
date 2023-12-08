@@ -315,10 +315,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     // only mark writable pages as cow page
-    if (flags & PTE_W) {
+    if (flags & PTE_W)
       flags = (flags & ~PTE_W) | PTE_COW;
-      *pte = (*pte & ~PTE_W) | PTE_COW;
-    }
 
     if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
        goto err;
@@ -326,6 +324,9 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
     if (inc_page_ref(pa) == -1)
       panic("uvmcopy: failed to increase page reference count");
+    
+    if (flags & PTE_COW)
+      *pte = (*pte & ~PTE_W) | PTE_COW;
   }
   return 0;
 
@@ -354,14 +355,22 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  int cow_pgf_status;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    if (va0 > MAXVA)
+    if (va0 >= MAXVA)
       return -1;
-      
-    if (cow_pagefault_handler(pagetable, va0) != 0)
-      return -1;
+    
+    cow_pgf_status = cow_pagefault_handler(pagetable, va0);
+    if (cow_pgf_status < 0) {
+      if (cow_pgf_status == -2) { // if it's because the memeory is not allocated, try to first allocate some memory for it
+        if (lazyalloc_pagefault_handler(myproc(), va0) != 0)
+          return -1;
+      } else { // otherwise, the cow handler failed unexpectly
+        return -1;
+      }
+    }
     
     if ((pa0 = walkaddr(pagetable, va0)) == 0)
       return -1;
@@ -388,8 +397,11 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+      if (lazyalloc_pagefault_handler(myproc(), va0) == -1)
+        return -1;
+      pa0 = walkaddr(pagetable, va0);
+    }
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;

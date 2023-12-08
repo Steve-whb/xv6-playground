@@ -29,6 +29,7 @@ kernel memory layout
 #define PA2INDEX(pa) ((uint64)pa - PGROUNDUP((uint64)end)) / PGSIZE
 // Number of pages the current CPU will get from other CPU if its is empty
 #define NPGTOMOVE 10
+#define MIN(a, b) (a < b) ? a : b
 
 void freerange(void *pa_start, void *pa_end);
 void initlocks(void);
@@ -131,12 +132,10 @@ safe_cpuid()
 int 
 move_freelist(int dst_cpuid, int src_cpuid)
 {
-  if (kmems[src_cpuid].size <= NPGTOMOVE)
-    return -1;
-
   struct run *current = kmems[src_cpuid].freelist;
   struct run *prev = 0;
-  for (int i = 0; i < NPGTOMOVE; i++) {
+  int pages_to_move = MIN(kmems[src_cpuid].size, NPGTOMOVE);
+  for (int i = 0; i < pages_to_move; i++) {
       prev = current;
       current = current->next;
   }
@@ -145,13 +144,11 @@ move_freelist(int dst_cpuid, int src_cpuid)
     return -1;
   
   prev->next = 0; // Detach the sublist
-  struct run *old_dst_head = kmems[dst_cpuid].freelist;
   kmems[dst_cpuid].freelist = kmems[src_cpuid].freelist;
   kmems[src_cpuid].freelist = current;
-  prev->next = old_dst_head; // Attach the sublist to dst freelist
 
-  kmems[dst_cpuid].size += NPGTOMOVE;
-  kmems[src_cpuid].size -= NPGTOMOVE;
+  kmems[dst_cpuid].size += pages_to_move;
+  kmems[src_cpuid].size -= pages_to_move;
   return 0;
 }
 

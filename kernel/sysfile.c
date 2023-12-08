@@ -483,8 +483,9 @@ sys_pipe(void)
   struct proc *p = myproc();
 
   argaddr(0, &fdarray);
-  if(pipealloc(&rf, &wf) < 0)
+  if(pipealloc(&rf, &wf) < 0) {
     return -1;
+  }
   fd0 = -1;
   if((fd0 = fdalloc(rf)) < 0 || (fd1 = fdalloc(wf)) < 0){
     if(fd0 >= 0)

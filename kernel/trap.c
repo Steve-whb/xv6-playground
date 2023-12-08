@@ -66,32 +66,37 @@ usertrap(void)
 
     syscall();
   } else if(r_scause() == 13) { // Load page fault
-    uint64 va = r_stval();  // page fault set stval register to hold the fault va
-
-    // va shouldn't exceed what the program asked sbrk to allocate
-    if (va >= p->sz) {
+    // page fault set stval register to hold the fault va
+    uint64 va = r_stval(); 
+    if (va >= MAXVA)
       exit(-1);
-    }
       
-    if (lazyalloc_pagefault_handler(p->pagetable, va) != 0) {
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if (pte == 0 || (*pte & PTE_V) == 0) {
+      if (lazyalloc_pagefault_handler(p, va) != 0)
+        setkilled(p);
+    } else {
       setkilled(p);
     }
+    
   } else if (r_scause() == 15) { // Store/AMO page fault
-
-    uint64 va = r_stval();  // page fault set stval register to hold the fault va
-
-    // va shouldn't exceed what the program asked sbrk to allocate
-    if (va >= p->sz) {
+    // page fault set stval register to hold the fault va
+    uint64 va = r_stval();
+    int is_handled = 0;
+    if (va >= MAXVA)
       exit(-1);
+
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if (pte == 0 || (*pte & PTE_V) == 0) {
+      if (lazyalloc_pagefault_handler(p, va) != 0) {
+        exit(-1);
+      } else {
+        is_handled = 1;
+      }
     }
 
-    if (lazyalloc_pagefault_handler(p->pagetable, va) != 0){
-        setkilled(p);
-    }
-
-    if (cow_pagefault_handler(p->pagetable, va) != 0) {
-        setkilled(p);
-    }
+    if (cow_pagefault_handler(p->pagetable, va) != 0 && !is_handled)
+      setkilled(p);
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -247,21 +252,20 @@ devintr()
 }
 
 int 
-lazyalloc_pagefault_handler(pagetable_t pagetable, uint64 va)
+lazyalloc_pagefault_handler(struct proc *p, uint64 va)
 {
   char* mem;
-  pte_t *pte;
-  
-  pte = walk(pagetable, va, 0);
-  // not a lazy allocation fault
-  if (pte != 0 && (*pte & PTE_V))
-    return 0;
-  
+
+  // for lazy allocation fault, va shouldn't exceed what the program asked sbrk to allocate 
+  // nor go below the allocated stack into the guard page
+  if (va >= p->sz || va < PGROUNDDOWN(p->trapframe->sp))
+    return -1;
+    
   if ((mem = kalloc()) == 0)
     return -1;
 
   memset(mem, 0, PGSIZE);
-  if (mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_U | PTE_W | PTE_R) != 0) {
+  if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_U | PTE_W | PTE_R) != 0) {
     printf("lazy_alloc_pagefault_handler: failed to install new pages\n");
     return -1;
   }
@@ -283,10 +287,10 @@ cow_pagefault_handler(pagetable_t pagetable, uint64 va)
   pa = PTE2PA(*pte);
   flags = PTE_FLAGS(*pte);
   if (pa == 0) 
-    return -1;
+    return -2;  // memory may not be allocated, use this to inform the client that they might want to call lazyalloc_pagefault_handler 
 
   if ((*pte & PTE_COW) == 0)
-    return 0;
+    return 1;
 
   if (get_page_ref(pa) > 1) {
     if((mem = kalloc()) == 0) {
