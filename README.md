@@ -6,6 +6,7 @@ This repository hosts my version of the `xv6` operating system, a simple Unix-li
 
 - **Copy-On-Write Fork:** Implemented an efficient process creation mechanism that avoids copying the entire address space of the parent until a write operation occurs.
 - **Lazy Allocation:** Implemented a memory management strategy that defers the allocation of physical memory for a page until the first time it is accessed. This approach minimizes memory usage by only allocating memory when it is actually needed, rather than at the time of address space creation or mapping.
+- **Per-CPU Freelist**: Transitioned from a shared global freelist to a per-CPU freelist for improved memory allocation efficiency. This update enhances parallel processing by allowing each CPU to manage its own freelist and reducing lock contention.
 - **Additional Features:** (...)
 
 ## License
